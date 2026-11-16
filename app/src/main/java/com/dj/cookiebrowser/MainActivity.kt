@@ -30,16 +30,12 @@ class MainActivity : AppCompatActivity() {
     private lateinit var progressBar: ProgressBar
     private lateinit var swipeRefresh: SwipeRefreshLayout
 
-    // Injected before any page JS runs — fixes webdriver flag being readable at page load
     private val ANTI_DETECTION_JS = """
         (function() {
-            // Kill the webdriver flag Google checks first
             Object.defineProperty(navigator, 'webdriver', {
                 get: () => undefined,
                 configurable: true
             });
-
-            // Realistic plugins list (empty = automation giveaway)
             const makePlugin = function(name, desc, file, mimeTypes) {
                 const plugin = { name, description: desc, filename: file, length: mimeTypes.length };
                 mimeTypes.forEach(function(mt, i) { plugin[i] = mt; });
@@ -64,11 +60,7 @@ class MainActivity : AppCompatActivity() {
             };
             pluginArray.refresh = function() {};
             Object.defineProperty(navigator, 'plugins', { get: () => pluginArray });
-
-            // Languages
             Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-
-            // window.chrome must exist and look real
             window.chrome = {
                 runtime: {
                     connect: function() { return { onMessage: { addListener: function(){} } }; },
@@ -86,19 +78,16 @@ class MainActivity : AppCompatActivity() {
                              connectionInfo: 'http/1.1' };
                 },
                 csi: function() {
-                    return { startE: Date.now(), onloadT: Date.now(), pageT: Date.now(),
-                             tran: 15 };
+                    return { startE: Date.now(), onloadT: Date.now(),
+                             pageT: Date.now(), tran: 15 };
                 },
                 app: {
                     isInstalled: false,
                     getDetails: function() { return null; },
                     getIsInstalled: function() { return false; },
-                    runningState: function() { return 'cannot_connect'; },
-                    InstallState: { DISABLED:'DISABLED', INSTALLED:'INSTALLED', NOT_INSTALLED:'NOT_INSTALLED' }
+                    runningState: function() { return 'cannot_connect'; }
                 }
             };
-
-            // Spoof permission query to avoid Notification fingerprint
             if (navigator.permissions && navigator.permissions.query) {
                 const originalQuery = navigator.permissions.query.bind(navigator.permissions);
                 navigator.permissions.query = function(parameters) {
@@ -107,8 +96,6 @@ class MainActivity : AppCompatActivity() {
                         : originalQuery(parameters);
                 };
             }
-
-            // Remove phantom / legacy automation traces
             delete window.externalHost;
             delete window._phantom;
             delete window.callPhantom;
@@ -120,9 +107,9 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        webView    = findViewById(R.id.webview)
-        addressBar = findViewById(R.id.address_bar)
-        progressBar= findViewById(R.id.progress_bar)
+        webView     = findViewById(R.id.webview)
+        addressBar  = findViewById(R.id.address_bar)
+        progressBar = findViewById(R.id.progress_bar)
         swipeRefresh = findViewById(R.id.swipe_refresh)
 
         setupWebView()
@@ -135,7 +122,6 @@ class MainActivity : AppCompatActivity() {
     private fun setupWebView() {
         val settings = webView.settings
 
-        // Use the real installed WebView UA — just strip the "wv" marker that flags WebView
         val realUa = WebSettings.getDefaultUserAgent(this)
             .replace("; wv)", ")")
             .replace("; wv ", "; ")
@@ -155,8 +141,6 @@ class MainActivity : AppCompatActivity() {
         settings.javaScriptCanOpenWindowsAutomatically = true
         settings.setSupportMultipleWindows(false)
 
-        // KEY FIX 1: suppress X-Requested-With header — this is what triggers
-        // "Verify your info" on Gmail. Needs androidx.webkit:webkit:1.8.0
         if (WebViewFeature.isFeatureSupported(WebViewFeature.REQUESTED_WITH_HEADER_MODE)) {
             WebSettingsCompat.setRequestedWithHeaderMode(
                 settings,
@@ -164,9 +148,6 @@ class MainActivity : AppCompatActivity() {
             )
         }
 
-        // KEY FIX 2: inject anti-detection JS *before* page JS executes
-        // evaluateJavascript (in onPageStarted) is too late — Google reads
-        // navigator.webdriver during page parse. addDocumentStartJavaScript wins the race.
         if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
             WebViewCompat.addDocumentStartJavaScript(webView, ANTI_DETECTION_JS, setOf("*"))
         }
@@ -241,8 +222,8 @@ class MainActivity : AppCompatActivity() {
         AlertDialog.Builder(this)
             .setTitle("Cookies — ${extractDomain(url)}")
             .setMessage(cookies)
-            .setPositiveButton("Copy Raw")      { _, _ -> copyToClipboard(cookies) }
-            .setNeutralButton("Copy Netscape")  { _, _ -> copyToClipboard(netscape) }
+            .setPositiveButton("Copy Raw")     { _, _ -> copyToClipboard(cookies) }
+            .setNeutralButton("Copy Netscape") { _, _ -> copyToClipboard(netscape) }
             .setNegativeButton("Close", null)
             .show()
     }

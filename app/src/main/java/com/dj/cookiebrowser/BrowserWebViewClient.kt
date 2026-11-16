@@ -43,13 +43,9 @@ class BrowserWebViewClient(
         }
     }
 
-    // shouldInterceptRequest removed — OkHttp was breaking auth flows
-
     override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
         super.onPageStarted(view, url, favicon)
         onPageStarted(url)
-        // Note: anti-detection JS is now injected via addDocumentStartJavaScript
-        // in MainActivity (runs before page JS, not after). No evaluateJavascript here.
     }
 
     override fun onPageFinished(view: WebView, url: String) {
