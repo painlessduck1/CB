@@ -1,6 +1,4 @@
 // BrowserWebViewClient.kt
-// Handles all URL interception, intent:// dispatch, verification flow
-
 package com.dj.cookiebrowser
 
 import android.content.ActivityNotFoundException
@@ -16,72 +14,42 @@ class BrowserWebViewClient(
     private val onPageFinished: (String) -> Unit
 ) : WebViewClient() {
 
-    private val interceptor = RequestInterceptor()
-
     override fun shouldOverrideUrlLoading(
         view: WebView,
         request: WebResourceRequest
     ): Boolean {
         val url = request.url.toString()
-
         return when {
             url.startsWith("intent://") -> handleIntentUri(url, view)
-
             url.startsWith("market://") -> {
                 try {
-                    context.startActivity(
-                        Intent(Intent.ACTION_VIEW, Uri.parse(url))
-                    )
+                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
                     true
                 } catch (e: ActivityNotFoundException) { false }
             }
-
             url.startsWith("mailto:") -> {
                 try {
-                    context.startActivity(
-                        Intent(Intent.ACTION_SENDTO, Uri.parse(url))
-                    )
+                    context.startActivity(Intent(Intent.ACTION_SENDTO, Uri.parse(url)))
                     true
                 } catch (e: Exception) { false }
             }
-
             url.startsWith("tel:") -> {
                 try {
-                    context.startActivity(
-                        Intent(Intent.ACTION_DIAL, Uri.parse(url))
-                    )
+                    context.startActivity(Intent(Intent.ACTION_DIAL, Uri.parse(url)))
                     true
                 } catch (e: Exception) { false }
             }
-
             else -> false
         }
     }
 
-    override fun shouldInterceptRequest(
-        view: WebView,
-        request: WebResourceRequest
-    ): WebResourceResponse? {
-        return interceptor.intercept(request)
-    }
+    // shouldInterceptRequest removed — OkHttp was breaking auth flows
 
     override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
         super.onPageStarted(view, url, favicon)
         onPageStarted(url)
-
-        view.evaluateJavascript("""
-            (function() {
-                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-                Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});
-                Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
-                window.chrome = {
-                    runtime: {},
-                    loadTimes: function(){},
-                    csi: function(){},
-                    app: {}
-                };
-            })();
-        """, null)
+        // Note: anti-detection JS is now injected via addDocumentStartJavaScript
+        // in MainActivity (runs before page JS, not after). No evaluateJavascript here.
     }
 
     override fun onPageFinished(view: WebView, url: String) {
@@ -119,9 +87,7 @@ class BrowserWebViewClient(
                 if (!fallback.isNullOrBlank()) {
                     view.loadUrl(fallback)
                 } else {
-                    Toast.makeText(context,
-                        "Google app not found — using SMS verify",
-                        Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "Google app not found", Toast.LENGTH_SHORT).show()
                 }
             }
             true
