@@ -1,6 +1,4 @@
 // MainActivity.kt
-// Full browser UI — address bar, navigation, cookie export
-
 package com.dj.cookiebrowser
 
 import android.content.ClipData
@@ -21,6 +19,9 @@ import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
+import androidx.webkit.WebSettingsCompat
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
 
 class MainActivity : AppCompatActivity() {
 
@@ -29,13 +30,99 @@ class MainActivity : AppCompatActivity() {
     private lateinit var progressBar: ProgressBar
     private lateinit var swipeRefresh: SwipeRefreshLayout
 
+    // Injected before any page JS runs — fixes webdriver flag being readable at page load
+    private val ANTI_DETECTION_JS = """
+        (function() {
+            // Kill the webdriver flag Google checks first
+            Object.defineProperty(navigator, 'webdriver', {
+                get: () => undefined,
+                configurable: true
+            });
+
+            // Realistic plugins list (empty = automation giveaway)
+            const makePlugin = function(name, desc, file, mimeTypes) {
+                const plugin = { name, description: desc, filename: file, length: mimeTypes.length };
+                mimeTypes.forEach(function(mt, i) { plugin[i] = mt; });
+                plugin.item = function(i) { return this[i]; };
+                plugin.namedItem = function(n) {
+                    for (let i = 0; i < this.length; i++)
+                        if (this[i].type === n) return this[i];
+                    return null;
+                };
+                return plugin;
+            };
+            const pluginArray = [
+                makePlugin('Chrome PDF Plugin','Portable Document Format','internal-pdf-viewer',[]),
+                makePlugin('Chrome PDF Viewer','','mhjfbmdgcfjbbpaeojofohoefgiehjai',[]),
+                makePlugin('Native Client','','internal-nacl-plugin',[])
+            ];
+            pluginArray.item = function(i) { return this[i]; };
+            pluginArray.namedItem = function(n) {
+                for (let i = 0; i < this.length; i++)
+                    if (this[i].name === n) return this[i];
+                return null;
+            };
+            pluginArray.refresh = function() {};
+            Object.defineProperty(navigator, 'plugins', { get: () => pluginArray });
+
+            // Languages
+            Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+
+            // window.chrome must exist and look real
+            window.chrome = {
+                runtime: {
+                    connect: function() { return { onMessage: { addListener: function(){} } }; },
+                    sendMessage: function() {},
+                    onMessage: { addListener: function() {} },
+                    id: undefined
+                },
+                loadTimes: function() {
+                    return { requestTime: Date.now()/1000, startLoadTime: Date.now()/1000,
+                             commitLoadTime: Date.now()/1000, finishDocumentLoadTime: Date.now()/1000,
+                             finishLoadTime: Date.now()/1000, firstPaintTime: Date.now()/1000,
+                             firstPaintAfterLoadTime: 0, navigationType: 'Other',
+                             wasFetchedViaSpdy: false, wasNpnNegotiated: false,
+                             npnNegotiatedProtocol: 'unknown', wasAlternateProtocolAvailable: false,
+                             connectionInfo: 'http/1.1' };
+                },
+                csi: function() {
+                    return { startE: Date.now(), onloadT: Date.now(), pageT: Date.now(),
+                             tran: 15 };
+                },
+                app: {
+                    isInstalled: false,
+                    getDetails: function() { return null; },
+                    getIsInstalled: function() { return false; },
+                    runningState: function() { return 'cannot_connect'; },
+                    InstallState: { DISABLED:'DISABLED', INSTALLED:'INSTALLED', NOT_INSTALLED:'NOT_INSTALLED' }
+                }
+            };
+
+            // Spoof permission query to avoid Notification fingerprint
+            if (navigator.permissions && navigator.permissions.query) {
+                const originalQuery = navigator.permissions.query.bind(navigator.permissions);
+                navigator.permissions.query = function(parameters) {
+                    return parameters.name === 'notifications'
+                        ? Promise.resolve({ state: Notification.permission })
+                        : originalQuery(parameters);
+                };
+            }
+
+            // Remove phantom / legacy automation traces
+            delete window.externalHost;
+            delete window._phantom;
+            delete window.callPhantom;
+            delete window.__nightmare;
+        })();
+    """.trimIndent()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        webView = findViewById(R.id.webview)
+        webView    = findViewById(R.id.webview)
         addressBar = findViewById(R.id.address_bar)
-        progressBar = findViewById(R.id.progress_bar)
+        progressBar= findViewById(R.id.progress_bar)
         swipeRefresh = findViewById(R.id.swipe_refresh)
 
         setupWebView()
@@ -48,7 +135,12 @@ class MainActivity : AppCompatActivity() {
     private fun setupWebView() {
         val settings = webView.settings
 
-        settings.userAgentString = RequestInterceptor.CHROME_UA
+        // Use the real installed WebView UA — just strip the "wv" marker that flags WebView
+        val realUa = WebSettings.getDefaultUserAgent(this)
+            .replace("; wv)", ")")
+            .replace("; wv ", "; ")
+        settings.userAgentString = realUa
+
         settings.javaScriptEnabled = true
         settings.domStorageEnabled = true
         settings.databaseEnabled = true
@@ -62,6 +154,22 @@ class MainActivity : AppCompatActivity() {
         settings.allowFileAccess = true
         settings.javaScriptCanOpenWindowsAutomatically = true
         settings.setSupportMultipleWindows(false)
+
+        // KEY FIX 1: suppress X-Requested-With header — this is what triggers
+        // "Verify your info" on Gmail. Needs androidx.webkit:webkit:1.8.0
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.REQUESTED_WITH_HEADER_MODE)) {
+            WebSettingsCompat.setRequestedWithHeaderMode(
+                settings,
+                WebSettingsCompat.REQUESTED_WITH_NO_HEADER
+            )
+        }
+
+        // KEY FIX 2: inject anti-detection JS *before* page JS executes
+        // evaluateJavascript (in onPageStarted) is too late — Google reads
+        // navigator.webdriver during page parse. addDocumentStartJavaScript wins the race.
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+            WebViewCompat.addDocumentStartJavaScript(webView, ANTI_DETECTION_JS, setOf("*"))
+        }
 
         val cookieManager = CookieManager.getInstance()
         cookieManager.setAcceptCookie(true)
@@ -96,12 +204,10 @@ class MainActivity : AppCompatActivity() {
             if (actionId == EditorInfo.IME_ACTION_GO ||
                 event?.keyCode == KeyEvent.KEYCODE_ENTER) {
                 val input = addressBar.text.toString().trim()
-                val url = if (input.startsWith("http://") || input.startsWith("https://")) {
-                    input
-                } else if (input.contains(".") && !input.contains(" ")) {
-                    "https://$input"
-                } else {
-                    "https://www.google.com/search?q=${Uri.encode(input)}"
+                val url = when {
+                    input.startsWith("http://") || input.startsWith("https://") -> input
+                    input.contains(".") && !input.contains(" ") -> "https://$input"
+                    else -> "https://www.google.com/search?q=${Uri.encode(input)}"
                 }
                 webView.loadUrl(url)
                 true
@@ -110,9 +216,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupSwipeRefresh() {
-        swipeRefresh.setOnRefreshListener {
-            webView.reload()
-        }
+        swipeRefresh.setOnRefreshListener { webView.reload() }
     }
 
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
@@ -122,36 +226,23 @@ class MainActivity : AppCompatActivity() {
 
     override fun onOptionsItemSelected(item: MenuItem): Boolean {
         return when (item.itemId) {
-            R.id.action_cookies -> {
-                showCookies()
-                true
-            }
-            R.id.action_refresh -> {
-                webView.reload()
-                true
-            }
-            R.id.action_home -> {
-                webView.loadUrl("https://accounts.google.com")
-                true
-            }
+            R.id.action_cookies -> { showCookies(); true }
+            R.id.action_refresh -> { webView.reload(); true }
+            R.id.action_home    -> { webView.loadUrl("https://accounts.google.com"); true }
             else -> super.onOptionsItemSelected(item)
         }
     }
 
     private fun showCookies() {
         val url = webView.url ?: return
-        val cookies = CookieExporter.exportRaw(url)
+        val cookies  = CookieExporter.exportRaw(url)
         val netscape = CookieExporter.exportForUrl(url)
 
         AlertDialog.Builder(this)
             .setTitle("Cookies — ${extractDomain(url)}")
             .setMessage(cookies)
-            .setPositiveButton("Copy Raw") { _, _ ->
-                copyToClipboard(cookies)
-            }
-            .setNeutralButton("Copy Netscape") { _, _ ->
-                copyToClipboard(netscape)
-            }
+            .setPositiveButton("Copy Raw")      { _, _ -> copyToClipboard(cookies) }
+            .setNeutralButton("Copy Netscape")  { _, _ -> copyToClipboard(netscape) }
             .setNegativeButton("Close", null)
             .show()
     }
@@ -163,9 +254,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun extractDomain(url: String): String {
-        return try {
-            java.net.URL(url).host
-        } catch (e: Exception) { url }
+        return try { java.net.URL(url).host } catch (e: Exception) { url }
     }
 
     @Suppress("OVERRIDE_DEPRECATION")
